@@ -1,0 +1,9 @@
+click
+joblib
+nltk
+numpy
+regex
+scikit-learn
+scipy
+threadpoolctl
+sklearn-crfsuite
