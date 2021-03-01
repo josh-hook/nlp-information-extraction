@@ -1,4 +1,6 @@
 import json
+import re
+
 
 def extract_table_of_contents(file, output_file: str = None) -> dict:
     """
@@ -6,7 +8,14 @@ def extract_table_of_contents(file, output_file: str = None) -> dict:
     table of contents, returning it as a JSON ({<chapter_number>: <chapter_title>}).
     If `output_file` is not None, then the JSON is outputted to a file with that name.
     """
-    table_of_contents = {}
+    book_contents = file.read()
+    chapter_pattern = r"""
+        (?xi) # Ignore case
+        chapter\s*(\d+).*?\s*([a-z].*)\n
+    """
+    found_chapters = re.findall(chapter_pattern, book_contents)
+
+    table_of_contents = {num: title for num, title in found_chapters}
 
     # Save the file to disk
     if output_file is not None:

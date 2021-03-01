@@ -3,3 +3,9 @@
 
 # IDE
 /.idea/
+
+# Resources
+/resources/
+
+# Pycaches
+/src/__pycache__/
