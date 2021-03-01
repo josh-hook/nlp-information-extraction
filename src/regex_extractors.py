@@ -11,7 +11,7 @@ def extract_table_of_contents(file, output_file: str = None) -> dict:
     book_contents = file.read()
     chapter_pattern = r"""
         (?xi) # Ignore case
-        chapter\s*(\d+).*?\s*([a-z].*)\n
+        chapter (\d+|[A-Z]+)[.:]?\s*([A-Z].*)\n
     """
     found_chapters = re.findall(chapter_pattern, book_contents)
 

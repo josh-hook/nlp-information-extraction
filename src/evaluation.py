@@ -5,6 +5,9 @@ from regex_extractors import extract_table_of_contents, extract_questions
 
 def eval_regex_table_of_contents(file, expected: dict):
     prediction = extract_table_of_contents(file)
+    if len(prediction) != len(expected):
+        return False
+
     for p, e in zip(prediction.items(), expected.items()):
         if p != e:
             return False
