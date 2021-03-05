@@ -41,7 +41,7 @@ def extract_table_of_contents(file, output_file: str = None) -> dict:
     return table_of_contents
 
 
-def extract_questions(file, output_file: str = None) -> list:
+def extract_questions(file, output_file: str = None) -> set:
     """
     Given the file of a plain text book (from www.gutenberg.org), this extracts every question in the book, returning
     a set of the questions.
@@ -49,13 +49,24 @@ def extract_questions(file, output_file: str = None) -> list:
     """
     book_contents = file.read()
 
-    compiled_pattern = re.compile(r"([A-Z][^!.\"“]*?\?)", re.DOTALL)
-    found_questions = re.findall(compiled_pattern, book_contents)
-    print(found_questions)
+    """
+    What is a question?
+    * A sentence in quotation marks or speech marks, which ends with a ?
+    * A sentence, which ends with a ?
+    """
 
-    questions = OrderedDict()
-    for q in found_questions:
-        questions[re.sub(r"\s", " ", q)] = 1
+    speech_marks = "‘“"
+    compiled_pattern = re.compile(
+        rf"([A-Z][^!.?{speech_marks}]*(?:\?|[{speech_marks}]([^!.{speech_marks}?]+\?)))",
+        flags=re.DOTALL
+    )
+    found_questions = re.findall(compiled_pattern, book_contents)
+
+    questions = set()
+    for sentence in found_questions:
+        for q in sentence:
+            if len(q) > 1:
+                questions.add(re.sub(r"\s", " ", q))
 
     # Save the file to disk
     if output_file is not None:
@@ -63,4 +74,4 @@ def extract_questions(file, output_file: str = None) -> list:
             text = "\n".join(questions)
             save_file.write(text + "\n")
 
-    return list(questions.keys())
+    return questions

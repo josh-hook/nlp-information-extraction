@@ -15,7 +15,7 @@ def eval_results(expected, prediction) -> float:
         print("\nPrediction len doesn't match expected len:", len(prediction), "!=", len(expected))
         print("Prediction:", prediction)
         print("Expected:", expected)
-        return f1_score(expected[:len(prediction)], prediction, average="macro")
+        return 0
 
     for p, e in zip(prediction, expected):
         if p != e:
@@ -46,9 +46,9 @@ def main():
         eval_path = os.path.join(resource_path, "eval_chapter.txt")
         gold_path = os.path.join(resource_path, "gold_questions.txt")
         with open(eval_path, 'r', encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
-            expected = gold_file.read().split("\n")[:-1]
-            prediction = extract_questions(eval_file)
-            questions_f1 = eval_results(list(expected), list(prediction))
+            expected = sorted(gold_file.read().split("\n")[:-1])
+            prediction = sorted(list(extract_questions(eval_file)))
+            questions_f1 = eval_results(expected, prediction)
 
         results_df.loc[i] = [resource, toc_f1, questions_f1, 0, 0]
 
