@@ -1,8 +1,6 @@
 import json
 import re
 
-from collections import OrderedDict
-
 
 def extract_table_of_contents(file, output_file: str = None) -> dict:
     """
@@ -25,12 +23,18 @@ def extract_table_of_contents(file, output_file: str = None) -> dict:
     """
     book_contents = file.read()
 
-    compiled_pattern = re.compile(r"C[hH][aA][pP][tT][eE][rR]\s+(\d+|[A-Z]+)[.:]? *\n?([A-Z].*)?\s*")
+    compiled_pattern = re.compile(
+        r"\n\n\s+chapter"  # A blank line followed by the word 'chapter'
+        r"\s+(\d+|[A-Z]+)"  # Chapter number
+        r"[.:]?\s*"  # Spacing or delimeter
+        r"(.*)?\s*\n",  # Chapter name followed by some spacing
+        re.IGNORECASE,
+    )
     found_chapters = re.findall(compiled_pattern, book_contents)
 
-    table_of_contents = OrderedDict()
+    table_of_contents = {}
     for num, title in found_chapters:
-        table_of_contents[num] = title
+        table_of_contents[num.strip()] = title.strip()
 
     # Save the file to disk
     if output_file is not None:
@@ -49,18 +53,19 @@ def extract_questions(file, output_file: str = None) -> set:
     """
     book_contents = file.read()
 
-    """
-    What is a question?
-    * A sentence in quotation marks or speech marks, which ends with a ?
-    * A sentence, which ends with a ?
-    """
-
     speech_marks = "‘“"
+    not_punctuation = rf"[^!.?{speech_marks}]"
     compiled_pattern = re.compile(
-        rf"([A-Z][^!.?{speech_marks}]*(?:\?|[{speech_marks}]([^!.{speech_marks}?]+\?)))",
-        flags=re.DOTALL
+        rf"([a-zA-Z]"  # Start of the question
+        rf"{not_punctuation}*"  # Any text which doesn't end the sentence
+        rf"(?:\?|"  # End of question or...
+        rf"[{speech_marks}]({not_punctuation}+\?)))",  # Speech marks followed by a question
+        flags=re.DOTALL,
     )
     found_questions = re.findall(compiled_pattern, book_contents)
+    # From 'So she began: “O Mouse, do you know the way out of this pool?' this will extract:
+    # ('So she began: “O Mouse, do you know the way out of this pool?',
+    #  'O Mouse, do you know the way out of this pool?')
 
     questions = set()
     for sentence in found_questions:

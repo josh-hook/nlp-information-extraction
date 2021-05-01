@@ -15,11 +15,13 @@ def eval_results(expected, prediction) -> float:
         print("\nPrediction len doesn't match expected len:", len(prediction), "!=", len(expected))
         print("Prediction:", prediction)
         print("Expected:", expected)
-        return 0
+
+        new_prediction = [e if e in prediction else "FALSE" for e in expected]
+        return f1_score(expected, new_prediction, average="macro") - 0.2  # -0.2 for unequal lengths
 
     for p, e in zip(prediction, expected):
         if p != e:
-            print("Given:", p, ", but expected:", e)
+            print("Given: '%s', but expected: '%s'" % (p, e))
 
     return f1_score(expected, prediction, average="macro")
 
@@ -37,18 +39,26 @@ def main():
         # Regex table of contents
         eval_path = os.path.join(resource_path, "eval_book.txt")
         gold_path = os.path.join(resource_path, "gold_toc.json")
-        with open(eval_path, 'r', encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
-            expected = [k + " " + v for k, v in json.load(gold_file).items()]
-            prediction = [k + " " + v for k, v in extract_table_of_contents(eval_file).items()]
-            toc_f1 = eval_results(expected, prediction)
+
+        if os.path.exists(eval_path) and os.path.exists(gold_path):
+            with open(eval_path, 'r', encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
+                expected = [k + " " + v for k, v in json.load(gold_file).items()]
+                prediction = [k + " " + v for k, v in extract_table_of_contents(eval_file).items()]
+                toc_f1 = eval_results(expected, prediction)
+        else:
+            toc_f1 = None
 
         # Regex questions
         eval_path = os.path.join(resource_path, "eval_chapter.txt")
         gold_path = os.path.join(resource_path, "gold_questions.txt")
-        with open(eval_path, 'r', encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
-            expected = sorted(gold_file.read().split("\n")[:-1])
-            prediction = sorted(list(extract_questions(eval_file)))
-            questions_f1 = eval_results(expected, prediction)
+
+        if os.path.exists(eval_path) and os.path.exists(gold_path):
+            with open(eval_path, 'r', encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
+                expected = sorted(gold_file.read().split("\n")[:-1])
+                prediction = sorted(list(extract_questions(eval_file)))
+                questions_f1 = eval_results(expected, prediction)
+        else:
+            questions_f1 = None
 
         results_df.loc[i] = [resource, toc_f1, questions_f1, 0, 0]
 
