@@ -28,9 +28,10 @@ def extract_table_of_contents(book_file: TextIO, output_file: str = None) -> dic
     compiled_pattern = re.compile(
         rf"\n\n\s*([Bb][Oo]{2}[Kk]|[Vv][Oo][Ll](?:[Uu][Mm][Ee])?|[Pp][Aa][Rr][Tt])\s+({num})"  # Volume/Part/Book
         r"|"
-        r"(?<![Cc][Oo][Nn][Tt][Ee][Nn][Tt][Ss])\n+\n\n\s*([Cc][Hh][Aa][Pp][Tt][Ee][Rr])\s+"  # A blank line followed by the word 'chapter'
+        r"(?<![Cc][Oo][Nn][Tt][Ee][Nn][Tt][Ss])\n+\n\n\s*([Cc][Hh][Aa][Pp][Tt][Ee][Rr])?\s+"  # A blank line followed by the word 'chapter'
+        r"[.:-]?\s*"  # Spacing or delimiter
         rf"({num})"  # Chapter number
-        r"[.:-]?\s+"  # Spacing or delimiter
+        r"[.:-]?\s*"  # Spacing or delimiter
         r"(.*)?\s*\n",  # Chapter name followed by some spacing
     )
     sections = re.findall(compiled_pattern, book_contents)
