@@ -1,8 +1,9 @@
-import json
 import re
+import json
+from typing import TextIO
 
 
-def extract_table_of_contents(file, output_file: str = None) -> dict:
+def extract_table_of_contents(book_file: TextIO, output_file: str = None) -> dict:
     """
     Given the file of a plain text book (from www.gutenberg.org), this extracts the chapter headings and creates a
     table of contents, returning it as a JSON ({<chapter_number>: <chapter_title>}).
@@ -21,20 +22,43 @@ def extract_table_of_contents(file, output_file: str = None) -> dict:
     * DOTALL regex flag means that '.' will match everything, including newlines (doesn't normally match "\n")
     * There will always be a chapter index
     """
-    book_contents = file.read()
+    book_contents = book_file.read()
 
+    num = r"\d+|[A-Z-]+"
     compiled_pattern = re.compile(
-        r"\n\n\s+chapter"  # A blank line followed by the word 'chapter'
-        r"\s+(\d+|[A-Z]+)"  # Chapter number
-        r"[.:]?\s*"  # Spacing or delimeter
+        rf"\n\n\s*([Bb][Oo]{2}[Kk]|[Vv][Oo][Ll](?:[Uu][Mm][Ee])?|[Pp][Aa][Rr][Tt])\s+({num})"  # Volume/Part/Book
+        r"|"
+        r"(?<![Cc][Oo][Nn][Tt][Ee][Nn][Tt][Ss])\n+\n\n\s*([Cc][Hh][Aa][Pp][Tt][Ee][Rr])\s+"  # A blank line followed by the word 'chapter'
+        rf"({num})"  # Chapter number
+        r"[.:-]?\s+"  # Spacing or delimiter
         r"(.*)?\s*\n",  # Chapter name followed by some spacing
-        re.IGNORECASE,
     )
-    found_chapters = re.findall(compiled_pattern, book_contents)
+    sections = re.findall(compiled_pattern, book_contents)
 
+    prefix_stack = []
+    prefix_set = set()
     table_of_contents = {}
-    for num, title in found_chapters:
-        table_of_contents[num.strip()] = title.strip()
+    for sec, sec_num, chp, chp_num, chp_title in sections:
+        # Update section
+        if len(sec) > 0:
+            # Remove old section
+            if sec in prefix_set:
+                prefix = ""
+                while len(prefix_stack) > 0 and sec != prefix:
+                    prefix, _ = prefix_stack.pop()
+                    prefix_set.remove(prefix)
+
+            # Add new section
+            prefix_stack.append((sec, sec_num))
+            prefix_set.add(sec)
+
+        # Update chapter
+        else:
+            # Build prefix
+            prefix = " ".join(["(%s %s)" % (s.lower().capitalize(), n) for s, n in prefix_stack])
+
+            chapter = prefix + " " + chp_num
+            table_of_contents[chapter.strip()] = chp_title.strip()
 
     # Save the file to disk
     if output_file is not None:
@@ -45,21 +69,22 @@ def extract_table_of_contents(file, output_file: str = None) -> dict:
     return table_of_contents
 
 
-def extract_questions(file, output_file: str = None) -> set:
+def extract_questions(book_file: TextIO, output_file: str = None) -> set:
     """
     Given the file of a plain text book (from www.gutenberg.org), this extracts every question in the book, returning
     a set of the questions.
     If `output_file` is not None, then the set of questions is outputted to a plain text file.
     """
-    book_contents = file.read()
+    book_contents = book_file.read()
 
-    speech_marks = "‘“"
-    not_punctuation = rf"[^!.?{speech_marks}]"
+    speech_marks = "‘“\""  # closing quotes: ’”
+    title = r"(?:s|iss|rs|r)\.?"
+    text = rf"(?: [Mm]{title}|[^!.?‘“\"])"
     compiled_pattern = re.compile(
-        rf"([a-zA-Z]"  # Start of the question
-        rf"{not_punctuation}*"  # Any text which doesn't end the sentence
+        rf"((?:M{title}|[A-Z])"  # Start of the question # TODO - Note: Making this [a-zA-Z] resulted in lower F1 score
+        rf"{text}*"  # Any text which doesn't end the sentence
         rf"(?:\?|"  # End of question or...
-        rf"[{speech_marks}]({not_punctuation}+\?)))",  # Speech marks followed by a question
+        rf"[{speech_marks}]({text}+\?)))",  # Speech marks followed by a question
         flags=re.DOTALL,
     )
     found_questions = re.findall(compiled_pattern, book_contents)

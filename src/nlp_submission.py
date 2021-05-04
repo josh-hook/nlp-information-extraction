@@ -101,16 +101,57 @@ def exec_regex_toc(file_book=None):
     """
 
     # hardcoded output to show exactly what is expected to be serialized
-    dictTOC = {
-        "1": "I AM BORN",
-        "2": "I OBSERVE",
-        "3": "I HAVE A CHANGE"
-    }
+    # dictTOC = {
+    #     "1": "I AM BORN",
+    #     "2": "I OBSERVE",
+    #     "3": "I HAVE A CHANGE"
+    # }
+
+    with open(file_book, "r", encoding="utf-8") as book_file:
+        book_contents = book_file.read()
+
+    num = r"\d+|[A-Z]+"
+
+    compiled_pattern = re.compile(
+        rf"\n\n\n\s*(book|vol(?:ume)?|part)\s+({num})"  # Volume/Part/Book
+        r"|"
+        r"\n\n\n\s*(chapter)\s+"  # A blank line followed by the word 'chapter'
+        rf"({num})"  # Chapter number
+        r"[.:-]?\s*"  # Spacing or delimiter
+        r"(.*)?\s*\n",  # Chapter name followed by some spacing
+        re.IGNORECASE,
+    )
+    sections = re.findall(compiled_pattern, book_contents)
+
+    prefix_stack = []
+    prefix_set = set()
+    table_of_contents = {}
+    for sec, sec_num, chp, chp_num, chp_title in sections:
+        # Update section
+        if len(sec) > 0:
+            # Remove old section
+            if sec in prefix_set:
+                prefix = ""
+                while len(prefix_stack) > 0 and sec != prefix:
+                    prefix, _ = prefix_stack.pop()
+                    prefix_set.remove(prefix)
+
+            # Add new section
+            prefix_stack.append((sec, sec_num))
+            prefix_set.add(sec)
+
+        # Update chapter
+        else:
+            # Build prefix
+            prefix = " ".join(["(%s %s)" % (s.lower().capitalize(), n) for s, n in prefix_stack])
+
+            chapter = prefix + " " + chp_num
+            table_of_contents[chapter.strip()] = chp_title.strip()
 
     # DO NOT CHANGE THE BELOW CODE WHICH WILL SERIALIZE THE ANSWERS FOR THE AUTOMATED TEST HARNESS TO LOAD AND MARK
 
     writeHandle = codecs.open('toc.json', 'w', 'utf-8', errors='replace')
-    strJSON = json.dumps(dictTOC, indent=2)
+    strJSON = json.dumps(table_of_contents, indent=2)
     writeHandle.write(strJSON + '\n')
     writeHandle.close()
 
@@ -119,18 +160,41 @@ def exec_regex_questions(file_chapter=None):
     # INSERT CODE TO USE REGEX TO LIST ALL QUESTIONS IN THE CHAPTER OF TEXT (subtask 2)
 
     # hardcoded output to show exactly what is expected to be serialized
-    setQuestions = {
-        "Traddles?",
-        "And another shilling or so in biscuits, and another in fruit, eh?",
-        "Perhaps you’d like to spend a couple of shillings or so, in a bottle of currant wine by and by, up in the "
-        "bedroom?",
-        "Has that fellow’--to the man with the wooden leg--‘been here again?",
-    }
+    # setQuestions = {
+    #     "Traddles?",
+    #     "And another shilling or so in biscuits, and another in fruit, eh?",
+    #     "Perhaps you’d like to spend a couple of shillings or so, in a bottle of currant wine by and by, up in the "
+    #     "bedroom?",
+    #     "Has that fellow’--to the man with the wooden leg--‘been here again?",
+    # }
+
+    with open(file_chapter, "r", encoding="utf-8") as book_file:
+        book_contents = book_file.read()
+
+    speech_marks = "‘“"  # closing quotes: ’”
+    not_punctuation = rf"[^!.?{speech_marks}]"
+    compiled_pattern = re.compile(
+        rf"([a-zA-Z]"  # Start of the question
+        rf"{not_punctuation}*"  # Any text which doesn't end the sentence
+        rf"(?:\?|"  # End of question or...
+        rf"[{speech_marks}]({not_punctuation}+\?)))",  # Speech marks followed by a question
+        flags=re.DOTALL,
+    )
+    found_questions = re.findall(compiled_pattern, book_contents)
+    # From 'So she began: “O Mouse, do you know the way out of this pool?' this will extract:
+    # ('So she began: “O Mouse, do you know the way out of this pool?',
+    #  'O Mouse, do you know the way out of this pool?')
+
+    questions = set()
+    for sentence in found_questions:
+        for q in sentence:
+            if len(q) > 1:
+                questions.add(re.sub(r"\s", " ", q))
 
     # DO NOT CHANGE THE BELOW CODE WHICH WILL SERIALIZE THE ANSWERS FOR THE AUTOMATED TEST HARNESS TO LOAD AND MARK
 
     writeHandle = codecs.open('questions.txt', 'w', 'utf-8', errors='replace')
-    for strQuestion in setQuestions:
+    for strQuestion in questions:
         writeHandle.write(strQuestion + '\n')
     writeHandle.close()
 

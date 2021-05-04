@@ -30,9 +30,14 @@ def main():
     """ Read in all resources and evaluate """
     resources_dir_path = sys.argv[1]
     resources = os.listdir(resources_dir_path)
+    resources.remove("ontonotes_parsed.json")
 
     results_df = pd.DataFrame(columns=("Book", "ToC f1", "Questions f1", "NER f1", "Characters f1"))
 
+    # Train the CRF
+    ontonotes_path = os.path.join(resources_dir_path, "ontonotes_parsed.json")
+
+    # Test for each book
     for i, resource in enumerate(resources):
         resource_path = os.path.join(resources_dir_path, resource)
 
@@ -41,7 +46,7 @@ def main():
         gold_path = os.path.join(resource_path, "gold_toc.json")
 
         if os.path.exists(eval_path) and os.path.exists(gold_path):
-            with open(eval_path, 'r', encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
+            with open(eval_path, "r", encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
                 expected = [k + " " + v for k, v in json.load(gold_file).items()]
                 prediction = [k + " " + v for k, v in extract_table_of_contents(eval_file).items()]
                 toc_f1 = eval_results(expected, prediction)
@@ -53,7 +58,7 @@ def main():
         gold_path = os.path.join(resource_path, "gold_questions.txt")
 
         if os.path.exists(eval_path) and os.path.exists(gold_path):
-            with open(eval_path, 'r', encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
+            with open(eval_path, "r", encoding="utf-8") as eval_file, open(gold_path, 'r', encoding="utf-8") as gold_file:
                 expected = sorted(gold_file.read().split("\n")[:-1])
                 prediction = sorted(list(extract_questions(eval_file)))
                 questions_f1 = eval_results(expected, prediction)
