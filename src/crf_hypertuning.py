@@ -15,9 +15,7 @@ def tune_crf():
         x, y = ner.parse_ontonotes_dataset(ontonotes)
         print("Parsed dataset")
 
-    crf = sklearn_crfsuite.CRF(
-        verbose=True
-    )
+    crf = sklearn_crfsuite.CRF()
     space = {
         "max_iterations": [100],
         "algorithm": ["lbfgs"],
@@ -39,6 +37,7 @@ def tune_crf():
             labels=["B-PERSON", "I_PERSON", "B-DATE", "I-DATE", "B-CARDINAL", "I-CARDINAL",
                     "B-ORDINAL", "I-ORDINAL", "B-NORP", "I-NORP"]
         ),
+        return_train_score=True,
     )
     search.fit(x, y)
     return search

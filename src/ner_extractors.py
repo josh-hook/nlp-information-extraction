@@ -7,7 +7,6 @@ import re
 
 import nltk
 from sklearn_crfsuite import CRF
-from sklearn.base import BaseEstimator
 
 
 def extract_word_info(word: str, prefix: str = "") -> dict:
@@ -31,8 +30,8 @@ def extract_word_info(word: str, prefix: str = "") -> dict:
 
 def parse_ontonotes_x(tokens: List, pos_tags: List) -> List:
     x = []
-    for i, (token, pos) in enumerate(zip(tokens, pos_tags)):
-        data = {"word": token, "pos": pos, **extract_word_info(token)}
+    for i in range(len(tokens)):
+        data = {"word": tokens[i], "pos": pos_tags[i], **extract_word_info(tokens[i])}
 
         # Look at previous token
         if i > 0:
@@ -85,16 +84,38 @@ def parse_ontonotes_dataset(ontonotes: dict) -> Tuple[List, List]:
     return x, y
 
 
-class NerModel(BaseEstimator):
-    def __init__(self, **kwargs):
-        self.crf = CRF(**kwargs)
+def train_crf_ner_model(x: Optional[List] = None,
+                        y: Optional[List] = None,
+                        ontonotes_file: Optional[TextIO] = None,
+                        **kwargs) -> CRF:
+    """
+    Train a CRF Named Entity Recognition model for DATE, CARDINAL, ORDINAL, and NORP entities, using the given dataset.
+    """
+    if ontonotes_file is not None:
+        ontonotes = json.load(ontonotes_file)
+        x, y = parse_ontonotes_dataset(ontonotes)
+    crf = CRF(**kwargs)
+    crf.fit(x, y)
+    return crf
 
-    def fit(self, x: List[List[dict]], y: List[List]):
-        """ Fit the CRF model with some parsed OntoNotes data """
-        self.crf.fit(x, y)
 
-    @staticmethod
-    def _accumulate_tags(acc, x):
+def predict_named_entities(crf: CRF, book_file: TextIO):
+    """
+    Given the file of a plain text book (from www.gutenberg.org) and a trained CRF model, this extracts the named
+    entities from the book, returning it as a JSON.
+    If `output_file` is not None, then the JSON is outputted to a file with that name.
+    """
+    book_contents = book_file.read()
+
+    # Tokenize and extract POS tags
+    tokens = nltk.tokenize.TreebankWordTokenizer().tokenize(book_contents)
+    pos_tags = list(map(itemgetter(1), nltk.pos_tag(tokens)))
+
+    # Parse to CRF data and predict named-entities
+    x = parse_ontonotes_x(tokens, pos_tags)
+    pred = crf.predict([x])[0]
+
+    def accumulate_tags(acc, x):
         if x[1].startswith("B") or len(acc) < 1:
             acc.append((x[0], x[1][2:]))
         else:
@@ -103,89 +124,19 @@ class NerModel(BaseEstimator):
 
         return acc
 
-    def predict(self, x: List[List[dict]]) -> List[dict]:
-        pred = self.crf.predict(x)
+    x_tagged = reduce(
+        # Reduce tags by joining B- and I- tags
+        accumulate_tags,
+        filter(
+            # Filter out NER tags not needed
+            lambda a: "NORP" in a[1] or "CARDINAL" in a[1] or "DATE" in a[1] or "PERSON" in a[1],
+            zip(tokens, pred),
+        ),
+        [],
+    )
 
-        result = []
-        for sentence, y_pred in zip(x, pred):
-            tokens = [data["word"] for data in sentence]
-            sentence_tagged = reduce(
-                # Reduce tags by joining B- and I- tags
-                self._accumulate_tags,
-                filter(
-                    # Filter out NER tags not needed
-                    lambda a: "NORP" in a[1] or "CARDINAL" in a[1] or "DATE" in a[1] or "PERSON" in a[1],
-                    zip(tokens, y_pred),
-                ),
-                [],
-            )
+    tags_dict = defaultdict(set)
+    for token, tag in x_tagged:
+        tags_dict[tag].add(token.lower())
 
-            tags_dict = defaultdict(set)
-            for token, tag in sentence_tagged:
-                tags_dict[tag].add(token.lower())
-
-            result.append(tags_dict)
-
-        return result
-
-
-# def train_crf_ner_model(x: Optional[List] = None,
-#                         y: Optional[List] = None,
-#                         ontonotes_file: Optional[TextIO] = None,
-#                         **kwargs) -> sklearn_crfsuite.CRF:
-#     """
-#     Train a CRF Named Entity Recognition model for DATE, CARDINAL, ORDINAL, and NORP entities, using the given dataset.
-#     """
-#     print("Parsing dataset")
-#     if ontonotes_file is not None:
-#         ontonotes = json.load(ontonotes_file)
-#         x, y = _parse_ontonotes_dataset(ontonotes)
-#     print("Training CRF")
-#     crf = sklearn_crfsuite.CRF(verbose=True, **kwargs)
-#     crf.fit(x, y)
-#     print("Finished training CRF")
-#     return crf
-
-
-# def predict_named_entities(crf: sklearn_crfsuite.CRF, book_file: TextIO):
-#     """
-#     Given the file of a plain text book (from www.gutenberg.org) and a trained CRF model, this extracts the named
-#     entities from the book, returning it as a JSON.
-#     If `output_file` is not None, then the JSON is outputted to a file with that name.
-#     """
-#     book_contents = book_file.read()
-#
-#     # Tokenize and extract POS tags
-#     tokens = nltk.tokenize.TreebankWordTokenizer().tokenize(book_contents)
-#     pos_tags = list(map(itemgetter(1), nltk.pos_tag(tokens)))
-#
-#     # Parse to CRF data and predict named-entities
-#     x = _parse_ontonotes_x(tokens, pos_tags)
-#     pred = crf.predict([x])[0]
-#
-#     def accumulate_tags(acc, x):
-#         if x[1].startswith("B") or len(acc) < 1:
-#             acc.append((x[0], x[1][2:]))
-#         else:
-#             x_prev = acc[-1]
-#             acc[-1] = (x_prev[0] + " " + x[0], x_prev[1])
-#
-#         return acc
-#
-#     x_tagged = reduce(
-#         # Reduce tags by joining B- and I- tags
-#         accumulate_tags,
-#         filter(
-#             # Filter out NER tags not needed
-#             lambda a: "NORP" in a[1] or "CARDINAL" in a[1] or "DATE" in a[1] or "PERSON" in a[1],
-#             zip(tokens, pred),
-#         ),
-#         [],
-#     )
-#
-#     tags_dict = defaultdict(set)
-#     for token, tag in x_tagged:
-#         tags_dict[tag].add(token.lower())
-#
-#     return tags_dict
-
+    return tags_dict
