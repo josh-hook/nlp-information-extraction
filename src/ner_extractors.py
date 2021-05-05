@@ -6,7 +6,11 @@ import json
 import re
 
 import nltk
+from nltk.corpus import gazetteers
 from sklearn_crfsuite import CRF
+
+
+gazetteer = {word for location in gazetteers.words() for word in location.split()}
 
 
 def extract_word_info(word: str, prefix: str = "") -> dict:
@@ -25,6 +29,9 @@ def extract_word_info(word: str, prefix: str = "") -> dict:
         prefix + "word.len": len(word),
         # Word shape replaces capitals with X, lowercase with x, digits with d
         prefix + "word.shape": re.sub(r"\d", "d", re.sub("[a-z]", "x", re.sub("[A-Z]", "X", word))),
+
+        # Gazetteer
+        prefix + "word.ingazetteer": word in gazetteer
     }
 
 
@@ -105,12 +112,63 @@ def train_crf_ner_model(x: Optional[List] = None,
         ontonotes = json.load(ontonotes_file)
         x, y = parse_ontonotes_dataset(ontonotes)
 
-    crf = CRF(**{'max_iterations': 100, 'c2': 0.0,
+    crf = CRF(**{'max_iterations': 20, 'c2': 0.0,
                  'c1': 0.4081632653061224, 'all_possible_transitions': False,
                  'algorithm': 'lbfgs'},
               **kwargs)
     crf.fit(x, y)
     return crf
+
+
+def update_person(tags_dict: dict, book_contents: str):
+    # Clean PERSON tags
+    person_set = set()
+    for token in tags_dict["PERSON"]:
+        extracted_regex_names = re.findall(
+            r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St)\b\. )*"  # Name prefix
+            r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)",  # Name
+            token,
+        )
+        if len(extracted_regex_names) > 0:
+            person_set.add(extracted_regex_names[0].lower().strip())
+
+    # Extract names of the form "Mr. John" or "J. John", etc
+    person_pattern = re.compile(
+        # Name isn't at the start of the sentence
+        r"(?<!^)(?<![.!?][\"“‘’] )(?<![.!?] )(?<![\"“‘])(?<!\n)(?<!-)(?<![Tt]he )(?<![Aa] )"
+        r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St)\b\. )+"  # Name prefix
+        r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)"  # Name
+    )
+    for token in re.findall(person_pattern, book_contents):
+        person_set.add(token.lower().strip())
+
+    tags_dict["PERSON"] = person_set
+
+
+# def update_ordinal(tags_dict: dict, book_contents: str):
+#     # Clean ORDINAL tags
+#     tags_dict["ORDINAL"] = {re.sub("[^a-z]", "", token) for token in tags_dict["ORDINAL"]}
+#
+#     # Extract ordinals using regex
+#     ordinal_pattern = re.compile(
+#         r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)"
+#     )
+#     add_to_set(tags_dict["ORDINAL"], re.findall(ordinal_pattern, book_contents))
+#
+#
+# def update_date(tags_dict: dict, book_contents: str):
+#     # Clean DATE tags
+#     tags_dict["DATE"] = {re.sub("[^a-z-']", "", token) for token in tags_dict["DATE"]}
+#
+#     # Extract dates using regex
+#     days = r"(?:[Mm]on(?:day)?|[Tt]ue(?:sday)?|[Ww]ed(?:nesday)?|[Tt]hu(?:rsday)?|[Ff]ri(?:day)?|" \
+#            r"[Ss]at(?:urday)?|[Ss]un(?:day)?)"
+#     months = r"(?:[Jj]an(?:uary)?|[Ff]eb(?:ruary)?|[Mm]arch|[Aa]pril|[Mm]ay|[Jj]une?|[Jj]uly?|" \
+#              r"[Aa]ug(?:ust)?|[Ss]ept?(?:ember)?|[Oo]ct(?:ober)?|[Nn]ov(?:ember)?|[Dd]ec(?:ember)?)"
+#     ordinal_pattern = re.compile(
+#         rf"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|(?:\d+(?:st|nd|rd|th)(?! {months})",
+#     )
+#     add_to_set(tags_dict["ORDINAL"], re.findall(ordinal_pattern, book_contents))
 
 
 def predict_named_entities(crf: CRF, book_file: TextIO):
@@ -120,6 +178,7 @@ def predict_named_entities(crf: CRF, book_file: TextIO):
     If `output_file` is not None, then the JSON is outputted to a file with that name.
     """
     book_contents = book_file.read()
+    book_contents = re.sub(r"(?<!\n)\n", " ", book_contents).strip()  # Remove extra spacing and newlines
 
     # Tokenize and extract POS tags
     tokens = nltk.tokenize.TreebankWordTokenizer().tokenize(book_contents)
@@ -140,23 +199,16 @@ def predict_named_entities(crf: CRF, book_file: TextIO):
         [],
     )
 
+    # Put named entities into sets
     tags_dict = defaultdict(set)
     for token, tag in x_tagged:
-        # Replace punctuation
-        t = re.sub(r"[(,{}\[\]#~@\"‘“!]", "", token.lower())
-        t = re.sub(r"(?<![a-z])['’]", "", t)
+        if tag == "PERSON":
+            tags_dict[tag].add(token.strip())
+        else:
+            tags_dict[tag].add(token.lower().strip())
 
-        # Replace fullstops which aren't part of a name
-        t = re.sub(r"(?<!mr)(?<!mrs)(?<!miss)(?<!ms)(?<!^[a-z])(?<! [a-z])\.", "", t)
+    # Update PERSON tags
+    update_person(tags_dict, book_contents)
 
-        # Remove random words
-        # TODO - Look up words in dict and remove?
-
-        tags_dict[tag].add(t)
-
-    ignore_words = {"i'm", "and" "im", "my", "he", "i", "has", "come", "but"}
-    ignore_regex = r"‘?.*(but)?.*"
-    tags_dict["PERSON"] = {person for person in tags_dict["PERSON"] if
-                           person not in ignore_words or re.match(ignore_regex, person)}
-
-    return tags_dict
+    # Convert sets to lists
+    return {k: list(v) for k, v in tags_dict.items()}

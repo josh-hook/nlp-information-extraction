@@ -24,13 +24,19 @@ import time
 import warnings
 import re
 import logging
+from collections import defaultdict
+from functools import reduce
+from operator import itemgetter
+from typing import TextIO, Optional, Tuple, List
 
+from nltk.corpus import gazetteers
 import nltk
 import numpy
 import scipy
 import sklearn
 import sklearn_crfsuite
 import sklearn_crfsuite.metrics
+from sklearn_crfsuite import CRF
 
 warnings.simplefilter(action='ignore', category=FutureWarning)
 LOG_FORMAT = '%(levelname) -s %(asctime)s %(message)s'
@@ -39,34 +45,336 @@ logging.basicConfig(level=logging.INFO, format=LOG_FORMAT)
 logger.info('logging started')
 
 
+# REGEX
+def extract_table_of_contents(book_file: TextIO, output_file: str = None) -> dict:
+    """
+    Given the file of a plain text book (from www.gutenberg.org), this extracts the chapter headings and creates a
+    table of contents, returning it as a JSON ({<chapter_number>: <chapter_title>}).
+    If `output_file` is not None, then the JSON is outputted to a file with that name.
+    """
+    book_contents = book_file.read()
+
+    # Remove newlines from sentences
+    book_contents = re.sub(r"(?<=[^\s])[\n\r](?=[^\s])", " ", book_contents)
+    book_contents = re.sub(r"(?<=[^\s])[\n\r](?= *[^\s])", " ", book_contents)
+
+    # Remove book header
+    book_body = re.search(
+        r"C[Oo][Nn][Tt][Ee][Nn][Tt][Ss][ .:\-—_]*\n*"  # Contents title
+        r"(?: *(?:\b[A-Za-z-]{3,}\b)? *\b(?:\d+|[A-Z-]+)\b *[.:\-—_]* *[^\n]*\n{1,3})+"  # Each contents entry
+        r"(.*)",  # Match book body + footer
+        book_contents,
+        flags=re.DOTALL,
+    )
+    if book_body is not None:
+        book_contents = "\n\n" + book_body.groups()[0]
+
+    # Remove book footer
+    book_body = re.search(
+        r"(.*)"  # Match book body
+        r"PROJECT GUTENBERG EBOOK",  # Beginning of the book's footer
+        book_contents,
+        flags=re.DOTALL,
+    )
+    if book_body is not None:
+        book_contents = book_body.groups()[0]
+
+    # Extract ToC
+    delimiter = r"[.:\-—_]*\s*"
+    compiled_pattern = re.compile(
+        # Volume/Part/Book
+        rf"\n+\s*([Bb][Oo][Oo][Kk]|[Vv][Oo][Ll](?:[Uu][Mm][Ee])?|[Pp][Aa][Rr][Tt])\s*\n?"  # Volume/Part/Book
+        rf"{delimiter}"  # Spacing or delimiter
+        r"\b(\d{1,4}|[A-Z-—]+)\b\n"  # Book number
+        r"|"
+
+        # Chapter heading WITH the word 'Chapter'
+        r"(?:\n{2,}\s*([Cc][Hh][Aa][Pp][Tt][Ee][Rr])\s*"  # A blank line followed by the word 'chapter'
+        rf"{delimiter}"  # Spacing or delimiter
+        r"\b(\d{1,4}|[IVXMLC]+)\b"  # Chapter number
+        rf"[.:\-—_]* *"  # Spacing or delimiter
+        r"|"
+
+        # Chapter heading WITHOUT the word 'Chapter'
+        r"\n{3,}\s*\b(\d{1,4}|[IVXMLC]+)\b"  # Spacing followed by chapter number
+        r"[.:\-—_]+ *)"  # Delimiter
+
+        # Chapter heading text
+        r"\n{0,2}(.*)? *\n{2,}",  # Chapter name followed by some spacing
+    )
+    sections = re.findall(compiled_pattern, book_contents)
+
+    prefix_stack = []
+    prefix_set = set()
+    table_of_contents = {}
+    for sec, sec_num, chp, chp_num, chp_num_no_header, chp_title in sections:
+        # Update section
+        if len(sec) > 0:
+            # Remove old section
+            if sec in prefix_set:
+                prefix = ""
+                while len(prefix_stack) > 0 and sec != prefix:
+                    prefix, _ = prefix_stack.pop()
+                    prefix_set.remove(prefix)
+
+            # Add new section
+            prefix_stack.append((sec, sec_num))
+            prefix_set.add(sec)
+
+        # Update chapter
+        else:
+            # Build prefix
+            prefix = " ".join(["(%s %s)" % (s.lower().capitalize(), n) for s, n in prefix_stack])
+
+            chapter = prefix + " " + (chp_num if len(chp) > 0 else chp_num_no_header)
+            table_of_contents[chapter.strip()] = chp_title.strip()
+
+    # Save the file to disk
+    if output_file is not None:
+        with open(output_file + ".json", "w", encoding="utf-8-sig") as save_file:
+            json_as_str = json.dumps(table_of_contents, indent=2)
+            save_file.write(json_as_str + "\n")
+
+    return table_of_contents
+
+
+def extract_questions(book_file: TextIO, output_file: str = None) -> set:
+    """
+    Given the file of a plain text book (from www.gutenberg.org), this extracts every question in the book, returning
+    a set of the questions.
+    If `output_file` is not None, then the set of questions is outputted to a plain text file.
+    """
+    book_contents = book_file.read()
+
+    speech_marks = "‘“\""  # closing quotes: ’”
+    title = r"(?:[Mm](?:s|iss|rs|r)|[Dd]r|[Ss]t)\.?"
+    title_upper_case = r"(?:M(?:s|iss|rs|r)|Dr|St)\.?"
+    text = rf"(?: {title}|[^!.?‘“\"])"
+    compiled_pattern = re.compile(
+        # Start of the question
+        rf"((?:{title_upper_case}|"  # Starts with a title (e.g. "Mr. John?")
+        rf"(?<=[.!?][-—])[a-z]|"  # Starts with a hyphen after a sentence (e.g. "What?-what?")
+        rf"(?<=[.!?] )[a-z]|"  # Starts with a lower case character after punctuation (e.g. "Hey! what?")
+        # Starts with a lower case character after punctuation and speech marks (e.g. ""Hey!" what?")
+        rf"(?<=[.!?][{speech_marks}”] )[a-z]|"
+        rf"(?<![a-z] )[A-Z])"  # Starts with an uppercase character and is not preceded by a lowercase character
+
+        rf"{text}*"  # Any text which doesn't end the sentence
+        rf"(?:\?|"  # End of question or...
+        rf"[{speech_marks}]({text}+\?)))",  # Speech marks followed by a question
+        flags=re.DOTALL,
+    )
+    found_questions = re.findall(compiled_pattern, book_contents)
+    # From 'So she began: “O Mouse, do you know the way out of this pool?' this will extract:
+    # ('So she began: “O Mouse, do you know the way out of this pool?',
+    #  'O Mouse, do you know the way out of this pool?')
+
+    questions = set()
+    for sentence in found_questions:
+        for q in sentence:
+            if len(q) > 1:
+                questions.add(re.sub(r"\s", " ", q))
+
+    # Save the file to disk
+    if output_file is not None:
+        with open(output_file + ".txt", "w", encoding="utf-8-sig") as save_file:
+            text = "\n".join(questions)
+            save_file.write(text + "\n")
+
+    return questions
+
+
+# NER
+gazetteer = {word for location in gazetteers.words() for word in location.split()}
+
+
+def extract_word_info(word: str, prefix: str = "") -> dict:
+    return {
+        # Textual information
+        # prefix + "word.lower": word.lower(),
+        prefix + "word.istitle": word.istitle(),
+        prefix + "word.islower": word.islower(),
+        prefix + "word.isnumeric": word.isnumeric(),
+
+        # Word prefix and suffix
+        prefix + "word.prefix": word[:4],
+        prefix + "word.suffix": word[-4:],
+
+        # Word shape information
+        prefix + "word.len": len(word),
+        # Word shape replaces capitals with X, lowercase with x, digits with d
+        prefix + "word.shape": re.sub(r"\d", "d", re.sub("[a-z]", "x", re.sub("[A-Z]", "X", word))),
+
+        # Gazetteer
+        prefix + "word.ingazetteer": word in gazetteer
+    }
+
+
+def parse_ontonotes_x(tokens: List, pos_tags: List) -> List:
+    x = []
+    for i in range(len(tokens)):
+        data = {"word": tokens[i], "pos": pos_tags[i], **extract_word_info(tokens[i])}
+
+        # Look at previous token
+        if i > 0:
+            data.update({
+                "-1:word": tokens[i - 1],
+                "-1:pos": pos_tags[i - 1],
+                **extract_word_info(tokens[i - 1], "-1:"),
+            })
+        else:
+            data["BOS"] = True
+
+        # Look at next token
+        if i < len(tokens) - 1:
+            data.update({
+                "+1:word": tokens[i + 1],
+                "+1:pos": pos_tags[i + 1],
+                **extract_word_info(tokens[i + 1], "+1:"),
+            })
+        else:
+            data["EOS"] = True
+
+        x.append(data)
+
+    return x
+
+
+def parse_ontonotes_y(sentence: dict) -> List:
+    y = ["O" for _ in range(len(sentence["tokens"]))]
+    if "ne" in sentence and "parse_error" not in sentence["ne"]:
+        # Add named entities
+        for ne in sentence["ne"].values():
+            for i in ne["tokens"]:
+                y[i] = ne["type"]
+
+        # Add I/B tags
+        y = [y[i] if y[i] == "O" else ("I-" + y[i] if i > 0 and y[i] == y[i - 1] else "B-" + y[i])
+             for i in range(len(y))]
+
+    return y
+
+
+def parse_ontonotes_dataset(ontonotes: dict) -> Tuple[List, List]:
+    x = []
+    y = []
+    for data_file in ontonotes.values():
+        for sentence in data_file.values():
+            x.append(parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"])))
+            y.append(parse_ontonotes_y(sentence))
+
+    return x, y
+
+
+def accumulate_tags(acc, x):
+    if x[1].startswith("B") or len(acc) < 1:
+        acc.append((x[0], x[1][2:]))
+    else:
+        x_prev = acc[-1]
+        acc[-1] = (x_prev[0] + " " + x[0], x_prev[1])
+
+    return acc
+
+
+def train_crf_ner_model(x: Optional[List] = None,
+                        y: Optional[List] = None,
+                        ontonotes_file: Optional[TextIO] = None,
+                        **kwargs) -> CRF:
+    """
+    Train a CRF Named Entity Recognition model for DATE, CARDINAL, ORDINAL, and NORP entities, using the given dataset.
+    """
+    if ontonotes_file is not None:
+        ontonotes = json.load(ontonotes_file)
+        x, y = parse_ontonotes_dataset(ontonotes)
+
+    crf = CRF(**{'max_iterations': 20, 'c2': 0.1,
+                 'c1': 0.1, 'all_possible_transitions': False,
+                 'algorithm': 'lbfgs'},
+              **kwargs)
+    crf.fit(x, y)
+    return crf
+
+
+def update_person(tags_dict: dict, book_contents: str):
+    # Clean PERSON tags
+    person_set = set()
+    for token in tags_dict["PERSON"]:
+        extracted_regex_names = re.findall(
+            r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss)\b\. )*"  # Name prefix
+            r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)",  # Name
+            token,
+        )
+        if len(extracted_regex_names) > 0:
+            person_set.add(extracted_regex_names[0].lower().strip())
+
+    # Extract names of the form "Mr. John" or "J. John", etc
+    person_pattern = re.compile(
+        # Name isn't at the start of the sentence
+        r"(?<!^)(?<![.!?][\"“‘’] )(?<![.!?] )(?<![\"“‘])(?<!\n)(?<!-)(?<![Tt]he )(?<![Aa] )"
+        r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss)\b\. )+"  # Name prefix
+        r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)"  # Name
+    )
+    for token in re.findall(person_pattern, book_contents):
+        person_set.add(token.lower().strip())
+
+    tags_dict["PERSON"] = person_set
+
+
+def predict_named_entities(crf: CRF, book_file: TextIO):
+    """
+    Given the file of a plain text book (from www.gutenberg.org) and a trained CRF model, this extracts the named
+    entities from the book, returning it as a JSON.
+    If `output_file` is not None, then the JSON is outputted to a file with that name.
+    """
+    book_contents = book_file.read()
+    book_contents = re.sub(r"(?<!\n)\n", " ", book_contents).strip()  # Remove extra spacing and newlines
+
+    # Tokenize and extract POS tags
+    tokens = nltk.tokenize.TreebankWordTokenizer().tokenize(book_contents)
+    pos_tags = list(map(itemgetter(1), nltk.pos_tag(tokens)))
+
+    # Parse to CRF data and predict named-entities
+    x = parse_ontonotes_x(tokens, pos_tags)
+    pred = crf.predict([x])[0]
+
+    x_tagged = reduce(
+        # Reduce tags by joining B- and I- tags
+        accumulate_tags,
+        filter(
+            # Filter out NER tags not needed
+            lambda a: "NORP" in a[1] or "CARDINAL" in a[1] or "DATE" in a[1] or "PERSON" in a[1],
+            zip(tokens, pred),
+        ),
+        [],
+    )
+
+    # Put named entities into sets
+    tags_dict = defaultdict(set)
+    for token, tag in x_tagged:
+        if tag == "PERSON":
+            tags_dict[tag].add(token.strip())
+        else:
+            tags_dict[tag].add(token.lower().strip())
+
+    # Update PERSON tags
+    update_person(tags_dict, book_contents)
+
+    # Convert sets to lists
+    return {k: list(v) for k, v in tags_dict.items()}
+
+
+# EXEC
 def exec_ner(file_chapter=None, ontonotes_file=None):
     # INSERT CODE TO TRAIN A CRF NER MODEL TO TAG THE CHAPTER OF TEXT (subtask 3)
     # USING NER MODEL AND REGEX GENERATE A SET OF BOOK CHARACTERS AND FILTERED SET OF NE TAGS (subtask 4)
 
-    # hardcoded output to show exactly what is expected to be serialized (you should change this)
-    dictNE = {
-        "CARDINAL": [
-            "two",
-            "three",
-            "one"
-        ],
-        "ORDINAL": [
-            "first"
-        ],
-        "DATE": [
-            "saturday",
-        ],
-        "NORP": [
-            "indians"
-        ],
-        "PERSON": [
-            "creakle",
-            "mr. creakle",
-            "mrs. creakle",
-            "miss creakle"
-        ]
-    }
+    with open(ontonotes_file, encoding="utf-8-sig") as file:
+        crf = train_crf_ner_model(ontonotes_file=file)
 
+    with open(chapter_file, encoding="utf-8-sig") as file:
+        pred = predict_named_entities(crf, file)
+
+    dictNE = pred
     # DO NOT CHANGE THE BELOW CODE WHICH WILL SERIALIZE THE ANSWERS FOR THE AUTOMATED TEST HARNESS TO LOAD AND MARK
 
     # write out all PERSON entries for character list for subtask 4
@@ -100,53 +408,8 @@ def exec_regex_toc(file_book=None):
     Output: Create a 'toc.json' file of {<chapter_number_text>: <chapter_title_text>}
     """
 
-    # hardcoded output to show exactly what is expected to be serialized
-    # dictTOC = {
-    #     "1": "I AM BORN",
-    #     "2": "I OBSERVE",
-    #     "3": "I HAVE A CHANGE"
-    # }
-
-    with open(file_book, "r", encoding="utf-8") as book_file:
-        book_contents = book_file.read()
-
-    num = r"\d+|[A-Z]+"
-
-    compiled_pattern = re.compile(
-        rf"\n\n\n\s*(book|vol(?:ume)?|part)\s+({num})"  # Volume/Part/Book
-        r"|"
-        r"\n\n\n\s*(chapter)\s+"  # A blank line followed by the word 'chapter'
-        rf"({num})"  # Chapter number
-        r"[.:-]?\s*"  # Spacing or delimiter
-        r"(.*)?\s*\n",  # Chapter name followed by some spacing
-        re.IGNORECASE,
-    )
-    sections = re.findall(compiled_pattern, book_contents)
-
-    prefix_stack = []
-    prefix_set = set()
-    table_of_contents = {}
-    for sec, sec_num, chp, chp_num, chp_title in sections:
-        # Update section
-        if len(sec) > 0:
-            # Remove old section
-            if sec in prefix_set:
-                prefix = ""
-                while len(prefix_stack) > 0 and sec != prefix:
-                    prefix, _ = prefix_stack.pop()
-                    prefix_set.remove(prefix)
-
-            # Add new section
-            prefix_stack.append((sec, sec_num))
-            prefix_set.add(sec)
-
-        # Update chapter
-        else:
-            # Build prefix
-            prefix = " ".join(["(%s %s)" % (s.lower().capitalize(), n) for s, n in prefix_stack])
-
-            chapter = prefix + " " + chp_num
-            table_of_contents[chapter.strip()] = chp_title.strip()
+    with open(file_book, "r", encoding="utf-8-sig") as book_file:
+        table_of_contents = extract_table_of_contents(book_file)
 
     # DO NOT CHANGE THE BELOW CODE WHICH WILL SERIALIZE THE ANSWERS FOR THE AUTOMATED TEST HARNESS TO LOAD AND MARK
 
@@ -159,37 +422,8 @@ def exec_regex_toc(file_book=None):
 def exec_regex_questions(file_chapter=None):
     # INSERT CODE TO USE REGEX TO LIST ALL QUESTIONS IN THE CHAPTER OF TEXT (subtask 2)
 
-    # hardcoded output to show exactly what is expected to be serialized
-    # setQuestions = {
-    #     "Traddles?",
-    #     "And another shilling or so in biscuits, and another in fruit, eh?",
-    #     "Perhaps you’d like to spend a couple of shillings or so, in a bottle of currant wine by and by, up in the "
-    #     "bedroom?",
-    #     "Has that fellow’--to the man with the wooden leg--‘been here again?",
-    # }
-
-    with open(file_chapter, "r", encoding="utf-8") as book_file:
-        book_contents = book_file.read()
-
-    speech_marks = "‘“"  # closing quotes: ’”
-    not_punctuation = rf"[^!.?{speech_marks}]"
-    compiled_pattern = re.compile(
-        rf"([a-zA-Z]"  # Start of the question
-        rf"{not_punctuation}*"  # Any text which doesn't end the sentence
-        rf"(?:\?|"  # End of question or...
-        rf"[{speech_marks}]({not_punctuation}+\?)))",  # Speech marks followed by a question
-        flags=re.DOTALL,
-    )
-    found_questions = re.findall(compiled_pattern, book_contents)
-    # From 'So she began: “O Mouse, do you know the way out of this pool?' this will extract:
-    # ('So she began: “O Mouse, do you know the way out of this pool?',
-    #  'O Mouse, do you know the way out of this pool?')
-
-    questions = set()
-    for sentence in found_questions:
-        for q in sentence:
-            if len(q) > 1:
-                questions.add(re.sub(r"\s", " ", q))
+    with open(file_chapter, "r", encoding="utf-8-sig") as book_file:
+        questions = extract_questions(book_file)
 
     # DO NOT CHANGE THE BELOW CODE WHICH WILL SERIALIZE THE ANSWERS FOR THE AUTOMATED TEST HARNESS TO LOAD AND MARK
 
@@ -219,6 +453,7 @@ if __name__ == '__main__':
     #
 
     exec_regex_toc(book_file)
+    logger.info("Finished ToC")
 
     #
     # subtask 2 >> extract every question from a provided plain text chapter of text
@@ -227,9 +462,11 @@ if __name__ == '__main__':
     #
 
     exec_regex_questions(chapter_file)
+    logger.info("Finished Questions")
 
     #
-    # subtask 3 (NER) >> train NER using ontonotes dataset, then extract DATE, CARDINAL, ORDINAL, NORP entities from a provided chapter of text
+    # subtask 3 (NER) >> train NER using ontonotes dataset, then extract DATE, CARDINAL, ORDINAL, NORP entities
+    # from a provided chapter of text
     # Input >> www.gutenberg.org sourced plain text file for a chapter of a book
     # Output >> ne.json = { <ne_type> : [ <phrase>, <phrase>, ... ] }
     #
@@ -239,3 +476,4 @@ if __name__ == '__main__':
     #
 
     exec_ner(chapter_file, ontonotes_file)
+    logger.info("Finished NER")
