@@ -15,9 +15,9 @@ def tune_crf():
         x, y = ner.parse_ontonotes_dataset(ontonotes)
         print("Parsed dataset")
 
-    crf = sklearn_crfsuite.CRF()
+    crf = sklearn_crfsuite.CRF(verbose=True)
     space = {
-        "max_iterations": [100],
+        "max_iterations": [50],
         "algorithm": ["lbfgs"],
         "all_possible_transitions": [True, False],
         "c1": np.linspace(0, 1),
@@ -30,7 +30,7 @@ def tune_crf():
         cv=3,
         verbose=2,
         n_jobs=-1,
-        n_iter=50,
+        n_iter=10,
         scoring=make_scorer(
             flat_f1_score,
             average='weighted',

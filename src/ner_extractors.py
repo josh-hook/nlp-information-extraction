@@ -84,6 +84,16 @@ def parse_ontonotes_dataset(ontonotes: dict) -> Tuple[List, List]:
     return x, y
 
 
+def accumulate_tags(acc, x):
+    if x[1].startswith("B") or len(acc) < 1:
+        acc.append((x[0], x[1][2:]))
+    else:
+        x_prev = acc[-1]
+        acc[-1] = (x_prev[0] + " " + x[0], x_prev[1])
+
+    return acc
+
+
 def train_crf_ner_model(x: Optional[List] = None,
                         y: Optional[List] = None,
                         ontonotes_file: Optional[TextIO] = None,
@@ -94,7 +104,11 @@ def train_crf_ner_model(x: Optional[List] = None,
     if ontonotes_file is not None:
         ontonotes = json.load(ontonotes_file)
         x, y = parse_ontonotes_dataset(ontonotes)
-    crf = CRF(**kwargs)
+
+    crf = CRF(**{'max_iterations': 100, 'c2': 0.0,
+                 'c1': 0.4081632653061224, 'all_possible_transitions': False,
+                 'algorithm': 'lbfgs'},
+              **kwargs)
     crf.fit(x, y)
     return crf
 
@@ -115,15 +129,6 @@ def predict_named_entities(crf: CRF, book_file: TextIO):
     x = parse_ontonotes_x(tokens, pos_tags)
     pred = crf.predict([x])[0]
 
-    def accumulate_tags(acc, x):
-        if x[1].startswith("B") or len(acc) < 1:
-            acc.append((x[0], x[1][2:]))
-        else:
-            x_prev = acc[-1]
-            acc[-1] = (x_prev[0] + " " + x[0], x_prev[1])
-
-        return acc
-
     x_tagged = reduce(
         # Reduce tags by joining B- and I- tags
         accumulate_tags,
@@ -137,6 +142,21 @@ def predict_named_entities(crf: CRF, book_file: TextIO):
 
     tags_dict = defaultdict(set)
     for token, tag in x_tagged:
-        tags_dict[tag].add(token.lower())
+        # Replace punctuation
+        t = re.sub(r"[(,{}\[\]#~@\"‘“!]", "", token.lower())
+        t = re.sub(r"(?<![a-z])['’]", "", t)
+
+        # Replace fullstops which aren't part of a name
+        t = re.sub(r"(?<!mr)(?<!mrs)(?<!miss)(?<!ms)(?<!^[a-z])(?<! [a-z])\.", "", t)
+
+        # Remove random words
+        # TODO - Look up words in dict and remove?
+
+        tags_dict[tag].add(t)
+
+    ignore_words = {"i'm", "and" "im", "my", "he", "i", "has", "come", "but"}
+    ignore_regex = r"‘?.*(but)?.*"
+    tags_dict["PERSON"] = {person for person in tags_dict["PERSON"] if
+                           person not in ignore_words or re.match(ignore_regex, person)}
 
     return tags_dict

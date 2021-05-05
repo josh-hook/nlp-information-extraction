@@ -24,15 +24,17 @@ def extract_table_of_contents(book_file: TextIO, output_file: str = None) -> dic
     """
     book_contents = book_file.read()
 
-    num = r"\d+|[A-Z-]+"
+    num_capture_group = r"\b(\d+|[A-Z-]+)\b"
     compiled_pattern = re.compile(
-        rf"\n\n\s*([Bb][Oo]{2}[Kk]|[Vv][Oo][Ll](?:[Uu][Mm][Ee])?|[Pp][Aa][Rr][Tt])\s+({num})"  # Volume/Part/Book
+        rf"\n\n\s*([Bb][Oo]{2}[Kk]|[Vv][Oo][Ll](?:[Uu][Mm][Ee])?|[Pp][Aa][Rr][Tt])\s*\n?"  # Volume/Part/Book
+        r"[.:-]?\s*"  # Spacing or delimiter
+        rf"{num_capture_group}"  # Book number
         r"|"
-        r"(?<![Cc][Oo][Nn][Tt][Ee][Nn][Tt][Ss])\n+\n\n\s*([Cc][Hh][Aa][Pp][Tt][Ee][Rr])?\s+"  # A blank line followed by the word 'chapter'
+        r"(?<![Cc][Oo][Nn][Tt][Ee][Nn][Tt][Ss])\n+\n\n\s*([Cc][Hh][Aa][Pp][Tt][Ee][Rr])?\s*\n?"  # A blank line followed by the word 'chapter'
         r"[.:-]?\s*"  # Spacing or delimiter
-        rf"({num})"  # Chapter number
+        rf"{num_capture_group}"  # Chapter number
         r"[.:-]?\s*"  # Spacing or delimiter
-        r"(.*)?\s*\n",  # Chapter name followed by some spacing
+        r"(.*)?\s*\n\n",  # Chapter name followed by some spacing
     )
     sections = re.findall(compiled_pattern, book_contents)
 
