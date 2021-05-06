@@ -94,13 +94,13 @@ def parse_ontonotes_dataset(ontonotes: dict, num_sentences: Optional[Union[int, 
     # Parse OntoNotes sentences
     x = []
     y = []
-    # from tqdm import tqdm
-    # for sentence in tqdm(data):
-    for sentence in data:
-        x.append(parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"])))
+    from tqdm import tqdm
+    for sentence in tqdm(data):
+    # for sentence in data:
+        x.append(ItemSequence(parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"]))))
         y.append(parse_ontonotes_y(sentence))
 
-    return ItemSequence(x), y
+    return x, y
 
 
 def accumulate_tags(acc, x):
@@ -127,9 +127,11 @@ def train_crf_ner_model(x: Optional[List] = None,
 
     crf = CRF(**{'max_iterations': 40, 'c2': 0.,
                  'c1': 0.4, 'all_possible_transitions': False,
-                 'algorithm': 'lbfgs'}, verbose=True,
+                 'algorithm': 'lbfgs'},
+              verbose=True,
               **kwargs)
     crf.fit(x, y)
+    print("Finished training CRF")
     return crf
 
 
