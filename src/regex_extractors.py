@@ -103,34 +103,41 @@ def extract_questions(book_file: TextIO, output_file: str = None) -> set:
     """
     book_contents = book_file.read()
 
-    speech_marks = "‘“\""  # closing quotes: ’”
-    title = r"(?:[Mm](?:s|iss|rs|r)|[Dd]r|[Ss]t)\.?"
-    title_upper_case = r"(?:M(?:s|iss|rs|r)|Dr|St)\.?"
-    text = rf"(?: {title}|[^!.?‘“\"])"
+    # Replace all whitespace with a single space
+    book_contents = re.sub(r"\s+", " ", book_contents)
+
+    # Extract questions
+    name = r"(?:[A-Z]\. ?)+[A-Z][a-z]+"
+    title = rf"(?<![a-z])(?:(?:[Mm](?:s|iss|rs|r)|[Dd]r|[Ss]t|[Ss]r|[Jj]r|[Pp]rof|[Hh]on|[Rr]ev)\.?|{name})"
+    title_upper_case = rf"(?:(?:M(?:s|iss|rs|r)|Dr|St|Sr|Jr|Prof|Hon|Rev)\.?|{name})"
+    text = rf"(?:{title} ?|[^!.?‘“\"”])"
+
     compiled_pattern = re.compile(
         # Start of the question
         rf"((?:{title_upper_case}|"  # Starts with a title (e.g. "Mr. John?")
-        rf"(?<=[.!?][-—])[a-z]|"  # Starts with a hyphen after a sentence (e.g. "What?-what?")
-        rf"(?<=[.!?] )[a-z]|"  # Starts with a lower case character after punctuation (e.g. "Hey! what?")
-        # Starts with a lower case character after punctuation and speech marks (e.g. ""Hey!" what?")
-        rf"(?<=[.!?][{speech_marks}”] )[a-z]|"  
-        rf"(?<![a-z] )[A-Z])" # Starts with an uppercase character and is not preceded by a lowercase character
+        rf"(?<=[.!?;][-—])[a-z]|"  # Starts with a hyphen after a sentence (e.g. "What?-what?")
+        rf"(?<=[.!?;]\s)[a-z]|"  # Starts with a lowercase character after punctuation (e.g. "Hey! what?")
+        # Starts with a lowercase character after punctuation and speech marks (e.g. '"Hey!" what?')
+        rf"(?<=[.!?;][‘“\"”]\s)[a-z]|"
+        rf"(?<![a-z]\s)[A-Z]|"  # Starts with an uppercase character and is not preceded by a lowercase character
+        rf"(?<=[‘“\"])[a-z])"  # Start of speech with a lowercase character
 
-        rf"{text}*"  # Any text which doesn't end the sentence
-        rf"(?:\?|"  # End of question or...
-        rf"[{speech_marks}]({text}+\?)))",  # Speech marks followed by a question
+        # Text body
+        rf"(?:{text}*\?|"  # Text followed by a question mark (for basic questions)
+        # Speech marks surrounding some added context (e.g. in 'This is"-- he exclaimed --"my question?')
+        rf"(?:{text}*[’”\"][^A-Za-z!.?‘“\"”]{text}+[‘“\"])+"
+        rf"({text}+\?)))",  # Capture the end of the question
         flags=re.DOTALL,
     )
     found_questions = re.findall(compiled_pattern, book_contents)
-    # From 'So she began: “O Mouse, do you know the way out of this pool?' this will extract:
-    # ('So she began: “O Mouse, do you know the way out of this pool?',
-    #  'O Mouse, do you know the way out of this pool?')
+    # From 'This is"-- he exclaimed --"my question?' this will extract:
+    # ('This is"-- he exclaimed --"my question?', 'my question?')
 
     questions = set()
     for sentence in found_questions:
         for q in sentence:
             if len(q) > 1:
-                questions.add(re.sub(r"\s", " ", q))
+                questions.add(re.sub(r"\s+", " ", q).strip())
 
     # Save the file to disk
     if output_file is not None:

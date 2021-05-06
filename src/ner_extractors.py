@@ -1,7 +1,8 @@
 from collections import defaultdict
 from functools import reduce
 from operator import itemgetter
-from typing import Tuple, List, TextIO, Optional
+from random import shuffle
+from typing import Tuple, List, TextIO, Optional, Union
 import json
 import re
 
@@ -13,50 +14,45 @@ from sklearn_crfsuite import CRF
 gazetteer = {word for location in gazetteers.words() for word in location.split()}
 
 
-def extract_word_info(word: str, prefix: str = "") -> dict:
+def extract_word_info(word: str, pos: str, prefix: str = "") -> dict:
     return {
+        # Base information
+        prefix + "word": word,
+        prefix + "pos": pos,
+
         # Textual information
         # prefix + "word.lower": word.lower(),
         prefix + "word.istitle": word.istitle(),
         prefix + "word.islower": word.islower(),
         prefix + "word.isnumeric": word.isnumeric(),
+        prefix + "word.ispunctuation": re.search(r"[.!?,~\-_—:;'\"‘’“”]", word) is not None,
+        prefix + "word.len": len(word),
 
         # Word prefix and suffix
-        prefix + "word.prefix": word[:4],
-        prefix + "word.suffix": word[-4:],
-
-        # Word shape information
-        prefix + "word.len": len(word),
-        # Word shape replaces capitals with X, lowercase with x, digits with d
-        prefix + "word.shape": re.sub(r"\d", "d", re.sub("[a-z]", "x", re.sub("[A-Z]", "X", word))),
+        prefix + "word.prefix": word[:3],
+        prefix + "word.suffix": word[-3:],
 
         # Gazetteer
-        prefix + "word.ingazetteer": word in gazetteer
+        prefix + "word.ingazetteer": word in gazetteer,
     }
 
 
 def parse_ontonotes_x(tokens: List, pos_tags: List) -> List:
     x = []
     for i in range(len(tokens)):
-        data = {"word": tokens[i], "pos": pos_tags[i], **extract_word_info(tokens[i])}
+        data = extract_word_info(tokens[i], pos_tags[i])
+        # Word shape replaces capitals with X, lowercase with x, digits with d
+        data["word.shape"] = re.sub(r"\d", "d", re.sub("[a-z]", "x", re.sub("[A-Z]", "X", tokens[i])))
 
         # Look at previous token
         if i > 0:
-            data.update({
-                "-1:word": tokens[i - 1],
-                "-1:pos": pos_tags[i - 1],
-                **extract_word_info(tokens[i - 1], "-1:"),
-            })
+            data.update(extract_word_info(tokens[i - 1], pos_tags[i - 1], "-1:"))
         else:
             data["BOS"] = True
 
         # Look at next token
         if i < len(tokens) - 1:
-            data.update({
-                "+1:word": tokens[i + 1],
-                "+1:pos": pos_tags[i + 1],
-                **extract_word_info(tokens[i + 1], "+1:"),
-            })
+            data.update(extract_word_info(tokens[i + 1], pos_tags[i + 1], "+1:"))
         else:
             data["EOS"] = True
 
@@ -80,13 +76,27 @@ def parse_ontonotes_y(sentence: dict) -> List:
     return y
 
 
-def parse_ontonotes_dataset(ontonotes: dict) -> Tuple[List, List]:
+def parse_ontonotes_dataset(ontonotes: dict, num_sentences: Optional[Union[int, float]] = None) -> Tuple[List, List]:
+    # Extract sentences and filter out those with incorrect PoS tags
+    data = [sentence for data_file in ontonotes.values() for sentence in data_file.values()
+            if "XX" not in sentence["pos"] and "VERB" not in sentence["pos"]]
+    ontonotes.clear()  # Clear old dict for memory
+    shuffle(data)  # Shuffle data
+
+    if num_sentences is not None:
+        if isinstance(num_sentences, float):
+            data = data[:int(len(data) * num_sentences)]
+        else:
+            data = data[:num_sentences]
+
+    # Parse OntoNotes sentences
     x = []
     y = []
-    for data_file in ontonotes.values():
-        for sentence in data_file.values():
-            x.append(parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"])))
-            y.append(parse_ontonotes_y(sentence))
+    # from tqdm import tqdm
+    # for sentence in tqdm(data):
+    for sentence in data:
+        x.append(parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"])))
+        y.append(parse_ontonotes_y(sentence))
 
     return x, y
 
@@ -104,16 +114,17 @@ def accumulate_tags(acc, x):
 def train_crf_ner_model(x: Optional[List] = None,
                         y: Optional[List] = None,
                         ontonotes_file: Optional[TextIO] = None,
+                        num_sentences: Optional[Union[int, float]] = None,
                         **kwargs) -> CRF:
     """
     Train a CRF Named Entity Recognition model for DATE, CARDINAL, ORDINAL, and NORP entities, using the given dataset.
     """
     if ontonotes_file is not None:
         ontonotes = json.load(ontonotes_file)
-        x, y = parse_ontonotes_dataset(ontonotes)
+        x, y = parse_ontonotes_dataset(ontonotes, num_sentences=num_sentences)
 
-    crf = CRF(**{'max_iterations': 20, 'c2': 0.0,
-                 'c1': 0.4081632653061224, 'all_possible_transitions': False,
+    crf = CRF(**{'max_iterations': 40, 'c2': 0.,
+                 'c1': 0.4, 'all_possible_transitions': False,
                  'algorithm': 'lbfgs'},
               **kwargs)
     crf.fit(x, y)
@@ -125,7 +136,7 @@ def update_person(tags_dict: dict, book_contents: str):
     person_set = set()
     for token in tags_dict["PERSON"]:
         extracted_regex_names = re.findall(
-            r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St)\b\. )*"  # Name prefix
+            r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St|Sr|Jr|Prof|Hon|Rev)\b\. )*"  # Name prefix
             r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)",  # Name
             token,
         )
@@ -136,39 +147,13 @@ def update_person(tags_dict: dict, book_contents: str):
     person_pattern = re.compile(
         # Name isn't at the start of the sentence
         r"(?<!^)(?<![.!?][\"“‘’] )(?<![.!?] )(?<![\"“‘])(?<!\n)(?<!-)(?<![Tt]he )(?<![Aa] )"
-        r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St)\b\. )+"  # Name prefix
+        r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St|Sr|Jr|Prof|Hon|Rev)\b\. )+"  # Name prefix
         r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)"  # Name
     )
     for token in re.findall(person_pattern, book_contents):
         person_set.add(token.lower().strip())
 
     tags_dict["PERSON"] = person_set
-
-
-# def update_ordinal(tags_dict: dict, book_contents: str):
-#     # Clean ORDINAL tags
-#     tags_dict["ORDINAL"] = {re.sub("[^a-z]", "", token) for token in tags_dict["ORDINAL"]}
-#
-#     # Extract ordinals using regex
-#     ordinal_pattern = re.compile(
-#         r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)"
-#     )
-#     add_to_set(tags_dict["ORDINAL"], re.findall(ordinal_pattern, book_contents))
-#
-#
-# def update_date(tags_dict: dict, book_contents: str):
-#     # Clean DATE tags
-#     tags_dict["DATE"] = {re.sub("[^a-z-']", "", token) for token in tags_dict["DATE"]}
-#
-#     # Extract dates using regex
-#     days = r"(?:[Mm]on(?:day)?|[Tt]ue(?:sday)?|[Ww]ed(?:nesday)?|[Tt]hu(?:rsday)?|[Ff]ri(?:day)?|" \
-#            r"[Ss]at(?:urday)?|[Ss]un(?:day)?)"
-#     months = r"(?:[Jj]an(?:uary)?|[Ff]eb(?:ruary)?|[Mm]arch|[Aa]pril|[Mm]ay|[Jj]une?|[Jj]uly?|" \
-#              r"[Aa]ug(?:ust)?|[Ss]ept?(?:ember)?|[Oo]ct(?:ober)?|[Nn]ov(?:ember)?|[Dd]ec(?:ember)?)"
-#     ordinal_pattern = re.compile(
-#         rf"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|(?:\d+(?:st|nd|rd|th)(?! {months})",
-#     )
-#     add_to_set(tags_dict["ORDINAL"], re.findall(ordinal_pattern, book_contents))
 
 
 def predict_named_entities(crf: CRF, book_file: TextIO):
@@ -212,3 +197,29 @@ def predict_named_entities(crf: CRF, book_file: TextIO):
 
     # Convert sets to lists
     return {k: list(v) for k, v in tags_dict.items()}
+
+
+# def update_ordinal(tags_dict: dict, book_contents: str):
+#     # Clean ORDINAL tags
+#     tags_dict["ORDINAL"] = {re.sub("[^a-z]", "", token) for token in tags_dict["ORDINAL"]}
+#
+#     # Extract ordinals using regex
+#     ordinal_pattern = re.compile(
+#         r"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|\d+(?:st|nd|rd|th)"
+#     )
+#     add_to_set(tags_dict["ORDINAL"], re.findall(ordinal_pattern, book_contents))
+#
+#
+# def update_date(tags_dict: dict, book_contents: str):
+#     # Clean DATE tags
+#     tags_dict["DATE"] = {re.sub("[^a-z-']", "", token) for token in tags_dict["DATE"]}
+#
+#     # Extract dates using regex
+#     days = r"(?:[Mm]on(?:day)?|[Tt]ue(?:sday)?|[Ww]ed(?:nesday)?|[Tt]hu(?:rsday)?|[Ff]ri(?:day)?|" \
+#            r"[Ss]at(?:urday)?|[Ss]un(?:day)?)"
+#     months = r"(?:[Jj]an(?:uary)?|[Ff]eb(?:ruary)?|[Mm]arch|[Aa]pril|[Mm]ay|[Jj]une?|[Jj]uly?|" \
+#              r"[Aa]ug(?:ust)?|[Ss]ept?(?:ember)?|[Oo]ct(?:ober)?|[Nn]ov(?:ember)?|[Dd]ec(?:ember)?)"
+#     ordinal_pattern = re.compile(
+#         rf"first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|(?:\d+(?:st|nd|rd|th)(?! {months})",
+#     )
+#     add_to_set(tags_dict["ORDINAL"], re.findall(ordinal_pattern, book_contents))

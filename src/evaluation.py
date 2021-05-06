@@ -32,7 +32,7 @@ def main():
     resources = os.listdir(resources_dir_path)
     resources.remove("ontonotes_parsed.json")
 
-    # resources = list(filter(lambda a: a == "alices_adventures_in_wonderland", resources))
+    # resources = list(filter(lambda a: a == "little_women", resources))
 
     results_df = pd.DataFrame(columns=("Book", "ToC f1", "Questions f1", "NER f1", "Characters f1"))
 

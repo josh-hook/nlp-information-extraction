@@ -12,12 +12,12 @@ import ner_extractors as ner
 def tune_crf():
     with open("resources/ontonotes_parsed.json", encoding="utf-8") as ontonotes_file:
         ontonotes = json.load(ontonotes_file)
-        x, y = ner.parse_ontonotes_dataset(ontonotes)
+        x, y = ner.parse_ontonotes_dataset(ontonotes, num_sentences=0.8)
         print("Parsed dataset")
 
     crf = sklearn_crfsuite.CRF(verbose=True)
     space = {
-        "max_iterations": [50],
+        "max_iterations": [40],
         "algorithm": ["lbfgs"],
         "all_possible_transitions": [True, False],
         "c1": np.linspace(0, 1),
