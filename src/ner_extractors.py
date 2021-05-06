@@ -25,7 +25,7 @@ def extract_word_info(word: str, pos: str, prefix: str = "") -> dict:
         prefix + "word.istitle": word.istitle(),
         prefix + "word.islower": word.islower(),
         prefix + "word.isnumeric": word.isnumeric(),
-        prefix + "word.ispunctuation": re.search(r"[.!?,~\-_—:;'\"‘’“”]", word) is not None,
+        prefix + "word.ispunctuation": re.search(r"[.!?,~\-_—:;'\"‘’“”/\\£$&%]", word) is not None,
         prefix + "word.len": len(word),
 
         # Word prefix and suffix
