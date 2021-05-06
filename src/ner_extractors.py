@@ -9,9 +9,11 @@ import re
 import nltk
 from nltk.corpus import gazetteers
 from sklearn_crfsuite import CRF
+from pycrfsuite import ItemSequence
 
 
 gazetteer = {word for location in gazetteers.words() for word in location.split()}
+regex_titles = r"Mr|Ms|Mrs|Miss|Dr|St|Sr|Jr|Prof|Hon|Rev"
 
 
 def extract_word_info(word: str, pos: str, prefix: str = "") -> dict:
@@ -29,7 +31,7 @@ def extract_word_info(word: str, pos: str, prefix: str = "") -> dict:
         prefix + "word.len": len(word),
 
         # Word prefix and suffix
-        prefix + "word.prefix": word[:3],
+        # prefix + "word.prefix": word[:3],
         prefix + "word.suffix": word[-3:],
 
         # Gazetteer
@@ -98,7 +100,7 @@ def parse_ontonotes_dataset(ontonotes: dict, num_sentences: Optional[Union[int, 
         x.append(parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"])))
         y.append(parse_ontonotes_y(sentence))
 
-    return x, y
+    return ItemSequence(x), y
 
 
 def accumulate_tags(acc, x):
@@ -125,19 +127,26 @@ def train_crf_ner_model(x: Optional[List] = None,
 
     crf = CRF(**{'max_iterations': 40, 'c2': 0.,
                  'c1': 0.4, 'all_possible_transitions': False,
-                 'algorithm': 'lbfgs'},
+                 'algorithm': 'lbfgs'}, verbose=True,
               **kwargs)
     crf.fit(x, y)
     return crf
 
 
-def update_person(tags_dict: dict, book_contents: str):
+def extract_name_to_set(person_set: set, name: str):
+    # Extract name if it isn't a title
+    extracted_name = re.search(r"(?!%s})[A-Z][a-z]{2,}" % regex_titles, name)
+    if extracted_name is not None:
+        person_set.add(extracted_name.group().lower().strip())
+
+
+def update_person(tokens: List, pos_tags: List, tags_dict: dict, book_contents: str):
     # Clean PERSON tags
     person_set = set()
     for token in tags_dict["PERSON"]:
         extracted_regex_names = re.findall(
-            r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St|Sr|Jr|Prof|Hon|Rev)\b\. )*"  # Name prefix
-            r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)",  # Name
+            rf"((?:\b(?:[A-Z]|{regex_titles})\b\.? )*"  # Name prefix
+            r"(?<!Miss|Prof)(?:\b[A-Z][a-z]{3,}\b ?)+)",  # Name
             token,
         )
         if len(extracted_regex_names) > 0:
@@ -147,11 +156,23 @@ def update_person(tags_dict: dict, book_contents: str):
     person_pattern = re.compile(
         # Name isn't at the start of the sentence
         r"(?<!^)(?<![.!?][\"“‘’] )(?<![.!?] )(?<![\"“‘])(?<!\n)(?<!-)(?<![Tt]he )(?<![Aa] )"
-        r"((?:\b(?:[A-Z]|Mr|Ms|Mrs|Miss|Dr|St|Sr|Jr|Prof|Hon|Rev)\b\. )+"  # Name prefix
-        r"(?<!Miss)(?:\b[A-Z][a-z]{3,}\b ?)+)"  # Name
+        rf"((?:\b(?:[A-Z]|{regex_titles})\b\.? )+"  # Name prefix
+        r"(?<!Miss)(?:\b[A-Z][a-z]{2,}\b ?)+)"  # Name
     )
     for token in re.findall(person_pattern, book_contents):
-        person_set.add(token.lower().strip())
+        name = token.lower().strip()
+        person_set.add(name)  # Full name
+        person_set.add(name.split()[-1])  # Surname
+
+    # Extract names surrounding verbs
+    for i in range(len(tokens)):
+        # Extract names around past or present tense verbs
+        if pos_tags[i] == "VBD" or pos_tags[i] == "VBZ":
+            # Take surrounding tokens (but not the previous if start of the sentence)
+            if i > 1 and re.search(r"[.!?‘’“”]", tokens[i - 2]) is None:
+                extract_name_to_set(person_set, tokens[i - 1])
+            elif i < len(tokens):
+                extract_name_to_set(person_set, tokens[i + 1])
 
     tags_dict["PERSON"] = person_set
 
@@ -163,10 +184,10 @@ def predict_named_entities(crf: CRF, book_file: TextIO):
     If `output_file` is not None, then the JSON is outputted to a file with that name.
     """
     book_contents = book_file.read()
-    book_contents = re.sub(r"(?<!\n)\n", " ", book_contents).strip()  # Remove extra spacing and newlines
+    book_contents = re.sub(r"\s+", " ", book_contents).strip()  # Remove extra spacing
 
     # Tokenize and extract POS tags
-    tokens = nltk.tokenize.TreebankWordTokenizer().tokenize(book_contents)
+    tokens = nltk.word_tokenize(book_contents)
     pos_tags = list(map(itemgetter(1), nltk.pos_tag(tokens)))
 
     # Parse to CRF data and predict named-entities
@@ -193,7 +214,7 @@ def predict_named_entities(crf: CRF, book_file: TextIO):
             tags_dict[tag].add(token.lower().strip())
 
     # Update PERSON tags
-    update_person(tags_dict, book_contents)
+    update_person(tokens, pos_tags, tags_dict, book_contents)
 
     # Convert sets to lists
     return {k: list(v) for k, v in tags_dict.items()}
