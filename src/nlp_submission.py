@@ -194,49 +194,47 @@ def extract_questions(book_file: TextIO, output_file: str = None) -> set:
 
 
 # NER
-# gazetteer = {word for location in gazetteers.words() for word in location.split()}
 regex_titles = r"Mr|Ms|Mrs|Miss|Dr|St|Sr|Jr|Prof|Hon|Rev"
 
 
-def extract_word_info(word: str, pos: str, prefix: str = "") -> dict:
+def extract_word_info(word: str, pos: str, gazetteer: set, prefix: str = "") -> dict:
     return {
         # Base information
         prefix + "word": word,
+        # prefix + "word.lower": word.lower(),
         prefix + "pos": pos,
 
         # Textual information
-        # prefix + "word.lower": word.lower(),
         prefix + "word.istitle": word.istitle(),
         prefix + "word.islower": word.islower(),
         prefix + "word.isnumeric": word.isnumeric(),
-        prefix + "word.ispunctuation": re.search(r"[.!?,~\-_—:;'\"‘’“”/\\£$&%]", word) is not None,
-        prefix + "word.len": len(word),
+        prefix + "word.ispunctuation": re.match(r"[.!?,~\-_—:;'\"‘’“”/\\£$&%]", word) is not None,
 
         # Word prefix and suffix
         prefix + "word.prefix": word[:3],
         prefix + "word.suffix": word[-3:],
 
         # Gazetteer
-        # prefix + "word.ingazetteer": word in gazetteer,
+        prefix + "word.ingazetteer": word in gazetteer,
     }
 
 
-def parse_ontonotes_x(tokens: List, pos_tags: List) -> List:
+def parse_ontonotes_x(tokens: List, pos_tags: List, gazetteer: set) -> List:
     x = []
     for i in range(len(tokens)):
-        data = extract_word_info(tokens[i], pos_tags[i])
+        data = extract_word_info(tokens[i], pos_tags[i], gazetteer)
         # Word shape replaces capitals with X, lowercase with x, digits with d
         data["word.shape"] = re.sub(r"\d", "d", re.sub("[a-z]", "x", re.sub("[A-Z]", "X", tokens[i])))
 
         # Look at previous token
         if i > 0:
-            data.update(extract_word_info(tokens[i - 1], pos_tags[i - 1], "-1:"))
+            data.update(extract_word_info(tokens[i - 1], pos_tags[i - 1], gazetteer, "-1:"))
         else:
             data["BOS"] = True
 
         # Look at next token
         if i < len(tokens) - 1:
-            data.update(extract_word_info(tokens[i + 1], pos_tags[i + 1], "+1:"))
+            data.update(extract_word_info(tokens[i + 1], pos_tags[i + 1], gazetteer, "+1:"))
         else:
             data["EOS"] = True
 
@@ -260,7 +258,10 @@ def parse_ontonotes_y(sentence: dict) -> List:
     return y
 
 
-def parse_ontonotes_dataset(ontonotes: dict, num_sentences: Optional[Union[int, float]] = None) -> Tuple[List, List]:
+def parse_ontonotes_dataset(ontonotes: dict,
+                            num_sentences: Optional[Union[int, float]] = None,
+                            to_item_sequence: bool = True,
+                            verbose: bool = False) -> Tuple[List, List]:
     # Extract sentences and filter out those with incorrect PoS tags
     data = [sentence for data_file in ontonotes.values() for sentence in data_file.values()
             if "XX" not in sentence["pos"] and "VERB" not in sentence["pos"]]
@@ -276,10 +277,15 @@ def parse_ontonotes_dataset(ontonotes: dict, num_sentences: Optional[Union[int, 
     # Parse OntoNotes sentences
     x = []
     y = []
-    from tqdm import tqdm
-    for sentence in tqdm(data):
-    # for sentence in data:
-        x.append(ItemSequence(parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"]))))
+
+    if verbose:
+        from tqdm import tqdm
+        data = tqdm(data)
+
+    gazetteer = {word for location in gazetteers.words() for word in location.split()}
+    for sentence in data:
+        x_parsed = parse_ontonotes_x(list(sentence["tokens"]), list(sentence["pos"]), gazetteer)
+        x.append(ItemSequence(x_parsed) if to_item_sequence else x_parsed)
         y.append(parse_ontonotes_y(sentence))
 
     return x, y
@@ -299,18 +305,18 @@ def train_crf_ner_model(x: Optional[List] = None,
                         y: Optional[List] = None,
                         ontonotes_file: Optional[TextIO] = None,
                         num_sentences: Optional[Union[int, float]] = None,
+                        verbose: bool = False,
                         **kwargs) -> CRF:
     """
     Train a CRF Named Entity Recognition model for DATE, CARDINAL, ORDINAL, and NORP entities, using the given dataset.
     """
     if ontonotes_file is not None:
         ontonotes = json.load(ontonotes_file)
-        x, y = parse_ontonotes_dataset(ontonotes, num_sentences=num_sentences)
+        x, y = parse_ontonotes_dataset(ontonotes, num_sentences=num_sentences, verbose=verbose)
 
-    crf = CRF(**{'max_iterations': 20, 'c2': 0.,
-                 'c1': 0.4, 'all_possible_transitions': False,
-                 'algorithm': 'lbfgs'},
-              verbose=True,
+    crf = CRF(**{'max_iterations': 20, 'c2': 0.061224489795918366, 'c1': 0.4081632653061224,
+                 'all_possible_transitions': False, 'algorithm': 'lbfgs'},
+              verbose=verbose,
               **kwargs)
     crf.fit(x, y)
     print("Finished training CRF")
